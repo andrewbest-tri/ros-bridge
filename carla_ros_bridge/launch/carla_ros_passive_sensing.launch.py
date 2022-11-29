@@ -18,6 +18,7 @@ def generate_launch_description():
                 text=str((object_spawn_path / "config" / "object_sensor_only.json").absolute())
             ),
             "spawn_sensors_only": TextSubstitution(text="true"),
+            "spawn_point_ego_vehicle": "dummy",
         }.items(),
     )
     ld = launch.LaunchDescription(
@@ -72,6 +73,7 @@ def generate_launch_description():
                 parameters=[
                     # TODO(andrew.best): Perhaps this solves our problems w.r.t to time?
                     {"use_sim_time": True},
+                    {"publish_clock": False},
                     {"host": launch.substitutions.LaunchConfiguration("host")},
                     {"port": launch.substitutions.LaunchConfiguration("port")},
                     {"timeout": launch.substitutions.LaunchConfiguration("timeout")},
