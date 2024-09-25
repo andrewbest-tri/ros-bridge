@@ -13,7 +13,7 @@ import math
 import os
 
 import numpy
-from carla import VehicleControl
+from carla import VehicleControl, VehicleWheelLocation
 
 from ros_compatibility.qos import QoSProfile, DurabilityPolicy
 
@@ -23,11 +23,13 @@ from carla_msgs.msg import (
     CarlaEgoVehicleInfo,
     CarlaEgoVehicleInfoWheel,
     CarlaEgoVehicleControl,
-    CarlaEgoVehicleStatus
+    CarlaEgoVehicleStatus,
+    CarlaVehicleWheelStatus
 )
 from std_msgs.msg import Bool  # pylint: disable=import-error
 from std_msgs.msg import ColorRGBA  # pylint: disable=import-error
 
+VEHICLE_INFO_RESET_TIME = 10.0
 
 class EgoVehicle(Vehicle):
 
@@ -93,6 +95,9 @@ class EgoVehicle(Vehicle):
             self.get_topic_prefix() + "/enable_autopilot",
             self.enable_autopilot_updated,
             qos_profile=10)
+        
+        # Reset vehicle info publisher every VEHICLE_INFO_RESET_TIME seconds.
+        self.vehicle_info_timer = node.create_timer(VEHICLE_INFO_RESET_TIME, self._reset_vehicle_info_published)
 
     def get_marker_color(self):
         """
@@ -118,6 +123,7 @@ class EgoVehicle(Vehicle):
         vehicle_status = CarlaEgoVehicleStatus(
             header=self.get_msg_header("map", timestamp=timestamp))
         vehicle_status.velocity = self.get_vehicle_speed_abs(self.carla_actor)
+        vehicle_status.engine_rotation_speed = self.carla_actor.get_engine_rotation_speed()
         vehicle_status.acceleration.linear = self.get_current_ros_accel().linear
         vehicle_status.orientation = self.get_current_ros_pose().orientation
         vehicle_status.control.throttle = self.carla_actor.get_control().throttle
@@ -127,9 +133,19 @@ class EgoVehicle(Vehicle):
         vehicle_status.control.reverse = self.carla_actor.get_control().reverse
         vehicle_status.control.gear = self.carla_actor.get_control().gear
         vehicle_status.control.manual_gear_shift = self.carla_actor.get_control().manual_gear_shift
+        for wheel_idx in range(4):
+            wheel_location = VehicleWheelLocation(wheel_idx)
+            wheel_status = CarlaVehicleWheelStatus()
+            wheel_status.speed = self.carla_actor.get_wheel_speed(wheel_location)
+            wheel_status.steer_angle = self.carla_actor.get_wheel_steer_angle(wheel_location)
+            wheel_status.pitch_angle = self.carla_actor.get_wheel_pitch_angle(wheel_location)
+            wheel_status.height = self.carla_actor.get_wheel_height(wheel_location)
+            wheel_status.lat_slip_angle = self.carla_actor.get_wheel_lat_slip(wheel_location)
+            wheel_status.long_slip_ratio = self.carla_actor.get_wheel_long_slip(wheel_location)
+            vehicle_status.wheels.append(wheel_status)
         self.vehicle_status_publisher.publish(vehicle_status)
 
-        # only send vehicle once (in latched-mode)
+        # only send vehicle once per VEHICLE_INFO_RESET_TIME seconds (in latched-mode)
         if not self.vehicle_info_published:
             self.vehicle_info_published = True
             vehicle_info = CarlaEgoVehicleInfo()
@@ -177,6 +193,9 @@ class EgoVehicle(Vehicle):
 
             self.vehicle_info_publisher.publish(vehicle_info)
 
+    def _reset_vehicle_info_published(self):
+        self.vehicle_info_published = False
+
     def update(self, frame, timestamp):
         """
         Function (override) to update this object.
@@ -198,6 +217,7 @@ class EgoVehicle(Vehicle):
         :return:
         """
         self.node.logdebug("Destroy Vehicle(id={})".format(self.get_id()))
+        self.vehicle_info_timer.cancel()
         self.node.destroy_subscription(self.control_subscriber)
         self.node.destroy_subscription(self.enable_autopilot_subscriber)
         self.node.destroy_subscription(self.control_override_subscriber)

@@ -10,7 +10,7 @@ Rosbridge class:
 
 Class that handle communication between CARLA and ROS
 """
-
+import multiprocessing
 import os
 import pkg_resources
 try:
@@ -36,6 +36,10 @@ from carla_ros_bridge.world_info import WorldInfo
 from carla_msgs.msg import CarlaControl, CarlaWeatherParameters
 from carla_msgs.srv import SpawnObject, DestroyObject, GetBlueprints
 from rosgraph_msgs.msg import Clock
+
+
+# Cyclone DDS on large core counts will not play nicely. Limit process to 16 cores.
+WORKER_THREADS = 0 if multiprocessing.cpu_count() < 16 else 16
 
 
 class CarlaRosBridge(CompatibleNode):
@@ -70,7 +74,6 @@ class CarlaRosBridge(CompatibleNode):
         self.parameters = params
         self.carla_world = carla_world
 
-        self.ros_timestamp = roscomp.ros_timestamp()
         self.callback_group = roscomp.callback_groups.ReentrantCallbackGroup()
 
         self.synchronous_mode_update_thread = None
@@ -113,7 +116,13 @@ class CarlaRosBridge(CompatibleNode):
         self.debug_helper = DebugHelper(carla_world.debug, self)
 
         # Communication topics
-        self.clock_publisher = self.new_publisher(Clock, 'clock', 10)
+        if self.parameters["publish_clock"]:
+            self.get_logger().info("Publishing clock.")
+            self.ros_timestamp = roscomp.ros_timestamp()
+            self.clock_publisher = self.new_publisher(Clock, 'clock', 10)
+        else:
+            self.ros_timestamp = None
+            self.clock_publisher = None
 
         self.status_publisher = CarlaStatusPublisher(
             self.carla_settings.synchronous_mode,
@@ -335,6 +344,10 @@ class CarlaRosBridge(CompatibleNode):
         :type carla_timestamp: carla.Timestamp
         :return:
         """
+
+        if not self.parameters["publish_clock"]:
+            return
+
         if roscomp.ok():
             self.ros_timestamp = roscomp.ros_timestamp(carla_timestamp.elapsed_seconds, from_sec=True)
             self.clock_publisher.publish(Clock(clock=self.ros_timestamp))
@@ -389,8 +402,9 @@ def main(args=None):
 
     parameters['host'] = carla_bridge.get_param('host', 'localhost')
     parameters['port'] = carla_bridge.get_param('port', 2000)
-    parameters['timeout'] = carla_bridge.get_param('timeout', 2)
+    parameters['timeout'] = carla_bridge.get_param('timeout', 10)
     parameters['passive'] = carla_bridge.get_param('passive', False)
+    parameters['publish_clock'] = carla_bridge.get_param('publish_clock', False)
     parameters['synchronous_mode'] = carla_bridge.get_param('synchronous_mode', True)
     parameters['synchronous_mode_wait_for_vehicle_control_command'] = carla_bridge.get_param(
         'synchronous_mode_wait_for_vehicle_control_command', False)
@@ -408,7 +422,9 @@ def main(args=None):
     try:
         carla_client = carla.Client(
             host=parameters['host'],
-            port=parameters['port'])
+            port=parameters['port'],
+            worker_threads=WORKER_THREADS
+        )
         carla_client.set_timeout(parameters['timeout'])
 
         # check carla version
@@ -419,8 +435,8 @@ def main(args=None):
         #         CarlaRosBridge.CARLA_VERSION, dist.version))
         #     sys.exit(1)
 
-        if LooseVersion(carla_client.get_server_version()) != \
-           LooseVersion(carla_client.get_client_version()):
+        if str(carla_client.get_server_version()) != \
+           str(carla_client.get_client_version()):
             carla_bridge.logwarn(
                 "Version mismatch detected: You are trying to connect to a simulator that might be incompatible with this API. Client API version: {}. Simulator API version: {}"
                 .format(carla_client.get_client_version(),
